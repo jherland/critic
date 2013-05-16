@@ -78,7 +78,7 @@ function writeStandardHeader(title, data)
   if (is_development)
     opera_class += " development";
 
-  write("</head><body><table class=pageheader width=100%%><tr><td class=left valign=bottom align=left><b onclick='location.href=\"/\"'><b class='%s'>Opera</b><b class=critic>Critic</b></b><ul>", opera_class);
+  write("</head><body><table class=pageheader width=100%%><tr><td class=left valign=bottom align=left><b onclick='location.href=\"/\"'><b class='%s'>Cisco</b><b class=critic>Critic</b></b><ul>", opera_class);
 
   var first = true;
 

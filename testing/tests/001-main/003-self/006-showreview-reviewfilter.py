@@ -61,7 +61,7 @@ with frontend.signin("alice"):
     mailbox.check_empty()
 
     review_id = result["review_id"]
-    document_title = "r/%d (No progress) - %s - Opera Critic" % (review_id, REVIEW_SUMMARY)
+    document_title = "r/%d (No progress) - %s - Cisco Critic" % (review_id, REVIEW_SUMMARY)
 
 with frontend.signin("admin"):
     frontend.page(

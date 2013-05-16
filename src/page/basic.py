@@ -17,6 +17,6 @@
 def generateHeader(target, generate_right=generateEmpty):
     row = target.table(width='100%', style='border-bottom: 3px solid black').tr()
     b = row.td(valign='bottom', align='left').b(style='font-family: sans-serif')
-    b.b(style='font-size: 40px; color: #d32226; cursor: pointer', onclick="location.href='/';").text("Opera")
+    b.b(style='font-size: 40px; color: #d32226; cursor: pointer', onclick="location.href='/';").text("Cisco")
     b.b(style='font-size: 50px; color: #666666; cursor: pointer', onclick="location.href='/';").text("Critic")
     generate_right(row.td(valign='bottom', align='right', style='padding-bottom: 10px'))

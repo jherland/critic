@@ -343,7 +343,7 @@
   },
   "ui.title.showReview": {
     "type": "string",
-    "default": "%(id)s (%(progress)s) - %(summary)s - Opera Critic",
+    "default": "%(id)s (%(progress)s) - %(summary)s - Cisco Critic",
     "description": "Python format string for title of review front-page documents."
   }
 }
