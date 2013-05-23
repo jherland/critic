@@ -48,8 +48,10 @@ except:
     print "Failed to connect to Critic's githook service!"
     exit(1)
 
+username = environ.get("GL_USER", getpwuid(getuid()).pw_name)
+
 # Line 1: user name.
-data = getpwuid(getuid()).pw_name + "\n"
+data = username + "\n"
 
 # Line 2: $REMOTE_USER or empty string if undefined.  This will only be used
 #         if the actual user (line 1) is the Critic system user.
