@@ -174,10 +174,10 @@ class Repository:
             url_format = "git://%s/%s"
         elif url_type in ("ssh", "host"):
             if url_type == "ssh":
-                prefix = "ssh://%s"
+                prefix = "ssh://"
             else:
-                prefix = "%s:"
-            url_format = prefix + os.path.join(configuration.paths.GIT_DIR, "%s")
+                prefix = ""
+            url_format = prefix + "critic@%s:" + os.path.join("projects", "%s")
         elif configuration.base.ACCESS_SCHEME == "http":
             url_format = "http://%s/%s"
         elif configuration.base.ACCESS_SCHEME == "https":
