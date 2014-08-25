@@ -249,7 +249,7 @@
   },
   "repository.urlType": {
     "type": "string",
-    "default": "http",
+    "default": "host",
     "description": "Type of repository URL to display."
   },
   "review.applyUpstreamFilters": {
