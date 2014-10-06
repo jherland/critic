@@ -121,7 +121,7 @@ class CommentChain:
                  LEFT OUTER JOIN commentstoread ON (comments.id=commentstoread.comment AND commentstoread.uid=%s)
                            WHERE comments.chain=%s
                              AND ((comments.state='draft' AND comments.uid=%s) OR comments.state='current')
-                        ORDER BY time""",
+                        ORDER BY comments.batch ASC""",
                        (user.id, self.id, draft_user_id))
         last = None
         for comment_id, batch_id, comment_state, author_id, time, comment, code, unread in cursor.fetchall():
@@ -211,7 +211,7 @@ class CommentChain:
                                  useremails.email, useremails.verified,
                                  commentchains.type, drafttype.to_type,
                                  commentchains.state, draftstate.to_state,
-                                 SUBSTRING(comments.comment FROM 1 FOR 81),
+                                 SUBSTR(comments.comment, 1, 81),
                                  chaincomments(commentchains.id),
                                  chainunread(commentchains.id, %s)
                             FROM commentchains

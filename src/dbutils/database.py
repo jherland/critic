@@ -86,7 +86,7 @@ class Database(Session):
             else:
                 return self.__rows
 
-        def execute(self, query, params=None, for_update=False):
+        def execute(self, query, params=(), for_update=False):
             if for_update:
                 assert query.upper().startswith("SELECT ")
                 query += " FOR UPDATE"
@@ -111,7 +111,7 @@ class Database(Session):
                     raise FailedToLock()
                 raise
 
-        def executemany(self, query, params):
+        def executemany(self, query, params=()):
             if self.__profiling is None:
                 self.__cursor.executemany(query, params)
             else:
@@ -127,6 +127,7 @@ class Database(Session):
     def __init__(self):
         super(Database, self).__init__()
         self.__connection = dbaccess.connect()
+        self.__commit_callbacks = []
 
     def cursor(self):
         return Database.Cursor(self, self.__connection.cursor(), self.profiling)
@@ -136,12 +137,16 @@ class Database(Session):
         self.__connection.commit()
         after = time.time()
         self.recordProfiling("<commit>", after - before, 0)
+        for callback in self.__commit_callbacks:
+            callback()
+        self.__commit_callbacks = []
 
     def rollback(self):
         before = time.time()
         self.__connection.rollback()
         after = time.time()
         self.recordProfiling("<rollback>", after - before, 0)
+        self.__commit_callbacks = []
 
     def close(self):
         super(Database, self).close()
@@ -150,9 +155,21 @@ class Database(Session):
             self.__connection.close()
             self.__connection = None
 
+    def closed(self):
+        return self.__connection is None
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         self.close()
         return False
+
+    def registerCommitCallback(self, callback):
+        self.__commit_callbacks.append(callback)
+
+# This function performs a NULL-safe conversion from a "truth" value or
+# arbitrary type to True/False (or None.)  It's a utility for working around the
+# fact that SQLite stores booleans as integers (zero or one.)
+def boolean(value):
+    return None if value is None else bool(value)

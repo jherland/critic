@@ -36,6 +36,9 @@ class Counters:
 counters = Counters()
 logger = None
 
+class TestingAborted(Exception):
+    pass
+
 def run():
     global logger
 
@@ -48,6 +51,8 @@ def run():
     parser.add_argument("--quiet", action="store_true",
                         help="Disable INFO level logging")
 
+    parser.add_argument("--quickstart", action="store_true",
+                        help="Test against a quick-start instance")
     parser.add_argument("--coverage", action="store_true",
                         help="Enable coverage measurement mode")
     parser.add_argument("--commit",
@@ -88,6 +93,9 @@ def run():
                         help="Pause testing after each failed test")
     parser.add_argument("--pause-upgrade-loop", action="store_true",
                         help="Support upgrading the tested system while paused")
+    parser.add_argument("--pause-upgrade-retry", action="store_true",
+                        help=("Support upgrading the tested system while paused "
+                              "after a failed test, and retrying the failed test"))
     parser.add_argument("--pause-upgrade-hook", action="append",
                         help="Command to run (locally) before upgrading")
 
@@ -127,15 +135,21 @@ Critic Testing Framework
 
 """)
 
-    if not arguments.local and not arguments.vm_identifier:
-        logger.error("Must specify one of --local and --vm-identifier!")
+
+    key_arguments = [arguments.local,
+                     arguments.quickstart,
+                     arguments.vm_identifier]
+
+    if len(filter(None, key_arguments)) != 1:
+        logger.error("Must specify exactly one of --local, --quickstart and "
+                     "--vm-identifier!")
         return
 
-    if arguments.local:
+    if arguments.local or arguments.quickstart:
         incompatible_arguments = []
 
         # This is not a complete list; just those that are most significantly
-        # incompatible or irrelevant with --local.
+        # incompatible or irrelevant with --local/--quickstart.
         if arguments.commit:
             incompatible_arguments.append("--commit")
         if arguments.upgrade_from:
@@ -150,7 +164,8 @@ Critic Testing Framework
             incompatible_arguments.append("--vm-identifier")
 
         if incompatible_arguments:
-            logger.error("These arguments can't be combined with --local:\n  " +
+            logger.error("These arguments can't be combined with "
+                         "--local/--quickstart:\n  " +
                          "\n  ".join(incompatible_arguments))
             return
 
@@ -197,7 +212,7 @@ The v8-jsshell submodule must be checked for extension testing.  Please run
 first or run this script without --test-extensions.""")
             return
 
-    if not arguments.local:
+    if arguments.vm_identifier:
         # Note: we are not ignoring typical temporary editor files such as the
         # ".#<name>" files created by Emacs when a buffer has unsaved changes.
         # This is because unsaved changes in an editor is probably also
@@ -265,23 +280,29 @@ first or run this script without --test-extensions.""")
         if arguments.local:
             frontend = None
             instance = testing.local.Instance()
-            flags_on.add("local")
         else:
             frontend = testing.frontend.Frontend(
                 hostname=arguments.vm_hostname or arguments.vm_identifier,
                 http_port=arguments.vm_http_port)
 
-            instance = testing.virtualbox.Instance(
-                arguments,
-                install_commit=(install_commit, install_commit_description),
-                upgrade_commit=(upgrade_commit, upgrade_commit_description),
-                frontend=frontend)
+            if arguments.quickstart:
+                instance = testing.quickstart.Instance(
+                    frontend=frontend)
+            else:
+                instance = testing.virtualbox.Instance(
+                    arguments,
+                    install_commit=(install_commit, install_commit_description),
+                    upgrade_commit=(upgrade_commit, upgrade_commit_description),
+                    frontend=frontend)
     except testing.Error as error:
         logger.error(error.message)
         return
 
     if not arguments.test_extensions:
         flags_off.add("extensions")
+
+    flags_on.update(instance.flags_on)
+    flags_off.update(instance.flags_off)
 
     tests, dependencies = testing.findtests.selectTests(
         arguments.test, strict=False, flags_on=flags_on, flags_off=flags_off)
@@ -290,12 +311,19 @@ first or run this script without --test-extensions.""")
         logger.error("No tests selected!")
         return
 
-    def pause():
-        if arguments.pause_upgrade_loop:
+    def pause(failed_test=None):
+        if arguments.pause_upgrade_loop \
+                or (failed_test and arguments.pause_upgrade_retry):
             print "Testing paused."
 
             while True:
-                testing.pause("Press ENTER to upgrade (to HEAD), CTRL-c to stop: ")
+                if failed_test and arguments.pause_upgrade_retry:
+                    testing.pause("Press ENTER to upgrade (to HEAD) and "
+                                  "retry %s, CTRL-c to stop: "
+                                  % os.path.basename(failed_test))
+                else:
+                    testing.pause("Press ENTER to upgrade (to HEAD), "
+                                  "CTRL-c to stop: ")
 
                 for command in arguments.pause_upgrade_hook:
                     subprocess.check_call(command, shell=True)
@@ -305,6 +333,9 @@ first or run this script without --test-extensions.""")
                 instance.execute(["git", "fetch", "origin", "master"], cwd="critic")
                 instance.upgrade_commit = "FETCH_HEAD"
                 instance.upgrade()
+
+                if failed_test and arguments.pause_upgrade_retry:
+                    return "retry"
         else:
             testing.pause("Testing paused.  Press ENTER to continue: ")
 
@@ -393,47 +424,52 @@ first or run this script without --test-extensions.""")
 
                 counters.tests_run += 1
 
-                try:
-                    errors_before = counters.errors_logged
-                    execfile(os.path.join("testing/tests", test.filename),
-                             scope.copy())
-                    if mailbox:
-                        mailbox.check_empty()
-                    instance.check_service_logs()
-                    if errors_before < counters.errors_logged:
-                        raise testing.TestFailure
-                except testing.TestFailure as failure:
-                    counters.tests_failed += 1
+                while True:
+                    try:
+                        errors_before = counters.errors_logged
+                        execfile(os.path.join("testing/tests", test.filename),
+                                 scope.copy())
+                        if mailbox:
+                            mailbox.check_empty()
+                        instance.check_service_logs()
+                        if errors_before < counters.errors_logged:
+                            raise testing.TestFailure
+                    except testing.TestFailure as failure:
+                        counters.tests_failed += 1
 
-                    failed_tests.add(test)
+                        failed_tests.add(test)
 
-                    if failure.message:
-                        logger.error(failure.message)
+                        if failure.message:
+                            logger.error(failure.message)
 
-                    if mailbox:
-                        try:
-                            while True:
-                                mail = mailbox.pop(
-                                    accept=testing.mailbox.ToRecipient(
-                                        "system@example.org"))
-                                logger.error("System message: %s\n  %s"
-                                             % (mail.header("Subject"),
-                                                "\n  ".join(mail.lines)))
-                        except testing.mailbox.MissingMail:
-                            pass
+                        if mailbox:
+                            try:
+                                while True:
+                                    mail = mailbox.pop(
+                                        accept=testing.mailbox.ToRecipient(
+                                            "system@example.org"))
+                                    logger.error("System message: %s\n  %s"
+                                                 % (mail.header("Subject"),
+                                                    "\n  ".join(mail.lines)))
+                            except testing.mailbox.MissingMail:
+                                pass
 
-                    instance.check_service_logs()
+                        instance.check_service_logs()
 
-                    if arguments.pause_on_failure:
-                        pause()
-                except testing.NotSupported as not_supported:
-                    failed_tests.add(test)
-                    logger.info("Test not supported: %s" % not_supported.message)
-                else:
-                    maybe_pause_after(test)
+                        if arguments.pause_on_failure \
+                                or arguments.pause_upgrade_retry:
+                            if pause(test.filename) == "retry":
+                                # Re-run test due to --pause-upgrade-retry.
+                                continue
+                    except testing.NotSupported as not_supported:
+                        failed_tests.add(test)
+                        logger.info("Test not supported: %s"
+                                    % not_supported.message)
+                    else:
+                        maybe_pause_after(test)
+                    break
         except KeyboardInterrupt:
-            logger.error("Testing aborted.")
-            return False
+            raise TestingAborted
         except testing.Error as error:
             if error.message:
                 logger.exception(error.message)
@@ -456,10 +492,10 @@ first or run this script without --test-extensions.""")
             run_group(group_name, all_groups[group_name])
         else:
             repository = testing.repository.Repository(
-                arguments.vbox_host,
+                "localhost" if arguments.quickstart else arguments.vbox_host,
                 arguments.git_daemon_port,
                 tested_commit,
-                arguments.vm_hostname)
+                instance)
             mailbox = testing.mailbox.Mailbox(instance,
                                               { "username": "smtp_username",
                                                 "password": "SmTp_PaSsWoRd" },
@@ -485,11 +521,12 @@ first or run this script without --test-extensions.""")
 def main():
     start_time = time.time()
 
-    run()
+    try:
+        run()
 
-    time_taken = str(datetime.timedelta(seconds=round(time.time() - start_time)))
+        time_taken = str(datetime.timedelta(seconds=round(time.time() - start_time)))
 
-    logger.info("""
+        logger.info("""
 Test summary
 ============
 Tests run:       %9d
@@ -503,7 +540,10 @@ Time taken:      %9s
        counters.warnings_logged,
        time_taken))
 
-    if counters.tests_failed or counters.errors_logged:
+        if counters.tests_failed or counters.errors_logged:
+            sys.exit(1)
+    except TestingAborted:
+        logger.error("Testing aborted.")
         sys.exit(1)
 
 if __name__ == "__main__":

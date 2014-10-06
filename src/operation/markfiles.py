@@ -33,13 +33,13 @@ class MarkFiles(Operation):
         # Revert any draft changes the user has for the specified files in
         # the specified changesets.
         cursor.execute("""DELETE FROM reviewfilechanges
-                                USING reviewfiles
-                                WHERE reviewfilechanges.uid=%s
-                                  AND reviewfilechanges.state='draft'
-                                  AND reviewfilechanges.file=reviewfiles.id
-                                  AND reviewfiles.review=%s
-                                  AND reviewfiles.changeset=ANY (%s)
-                                  AND reviewfiles.file=ANY (%s)""",
+                                WHERE uid=%s
+                                  AND state='draft'
+                                  AND file IN (SELECT id
+                                                 FROM reviewfiles
+                                                WHERE review=%s
+                                                  AND changeset=ANY (%s)
+                                                  AND file=ANY (%s))""",
                        (user.id, review.id, changeset_ids, file_ids))
 
         if reviewed:
@@ -48,7 +48,7 @@ class MarkFiles(Operation):
             from_state, to_state = 'reviewed', 'pending'
 
         # Insert draft changes for every file whose state would be updated.
-        cursor.execute("""INSERT INTO reviewfilechanges (file, uid, "from", "to")
+        cursor.execute("""INSERT INTO reviewfilechanges (file, uid, from_state, to_state)
                                SELECT reviewfiles.id, reviewuserfiles.uid, reviewfiles.state, %s
                                  FROM reviewfiles
                                  JOIN reviewuserfiles ON (reviewuserfiles.file=reviewfiles.id AND reviewuserfiles.uid=%s)

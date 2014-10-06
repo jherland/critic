@@ -59,12 +59,16 @@ class Instance(testing.Instance):
         self.ssh_port = arguments.vm_ssh_port
         if install_commit:
             self.install_commit, self.install_commit_description = install_commit
+            self.tested_commit = self.install_commit
         if upgrade_commit:
             self.upgrade_commit, self.upgrade_commit_description = upgrade_commit
+            if self.upgrade_commit:
+                self.tested_commit = self.upgrade_commit
         self.frontend = frontend
         self.strict_fs_permissions = getattr(arguments, "strict_fs_permissions", False)
         self.coverage = getattr(arguments, "coverage", False)
         self.mailbox = None
+        self.etc_dir = "/etc/critic"
 
         # Check that the identified VM actually exists:
         output = subprocess.check_output(
@@ -338,6 +342,12 @@ class Instance(testing.Instance):
         except subprocess.CalledProcessError as error:
             raise GuestCommandError(" ".join(argv), error.output)
 
+    def criticctl(self, argv):
+        try:
+            return self.execute(["sudo", "criticctl"] + argv)
+        except GuestCommandError as error:
+            raise testing.CriticctlError(error.command, error.stdout, error.stderr)
+
     def adduser(self, name, email=None, fullname=None, password=None):
         if email is None:
             email = "%s@example.org" % name
@@ -381,6 +391,16 @@ class Instance(testing.Instance):
         else:
             check_commit = self.install_commit
         return testing.has_flag(check_commit, flag)
+
+    def repository_path(self, repository="critic"):
+        return "/var/git/%s.git" % repository
+
+    def repository_url(self, name=None, repository="critic"):
+        if name is None:
+            user_prefix = ""
+        else:
+            user_prefix = name + "@"
+        return "%s%s:/var/git/%s.git" % (user_prefix, self.hostname, repository)
 
     def restrict_access(self):
         if not self.strict_fs_permissions:
@@ -541,6 +561,7 @@ class Instance(testing.Instance):
         testing.logger.info("Installed Critic: %s" % self.install_commit_description)
 
         self.__installed = True
+        self.current_commit = self.install_commit
 
     def check_upgrade(self):
         if not self.upgrade_commit:
@@ -608,6 +629,7 @@ class Instance(testing.Instance):
                     arguments.append(value)
 
             self.execute(["git", "checkout", self.upgrade_commit], cwd="critic")
+            self.execute(["git", "submodule", "update", "--recursive"], cwd="critic")
 
             # Setting this will make has_flag() from now on (including when used
             # in the rest of this function) check the upgraded-to commit rather
@@ -629,9 +651,12 @@ class Instance(testing.Instance):
 
             testing.logger.info("Upgraded Critic: %s" % self.upgrade_commit_description)
 
+            self.current_commit = self.upgrade_commit
+
     def check_extend(self, repository, pre_upgrade=False):
-        if not testing.exists_at(self.install_commit, "extend.py"):
-            raise testing.NotSupported("installed commit lacks extend.py")
+        commit = self.install_commit if pre_upgrade else self.tested_commit
+        if not testing.exists_at(commit, "extend.py"):
+            raise testing.NotSupported("tested commit lacks extend.py")
         if not self.arguments.test_extensions:
             raise testing.NotSupported("--test-extensions argument not given")
         if not repository.v8_jsshell_path:
@@ -651,15 +676,30 @@ class Instance(testing.Instance):
 
             self.execute(argv, cwd="critic")
 
-        internal("prereqs")
+        internal("prereqs", ["--libcurl-flavor=gnutls"])
 
-        v8_jsshell_sha1 = subprocess.check_output(
-            ["git", "ls-tree", "HEAD:installation/externals", "v8-jsshell"]).split()[2]
+        submodule_path = "installation/externals/v8-jsshell"
+
+        v8_jsshell_sha1 = testing.repository.submodule_sha1(
+            os.getcwd(), self.current_commit, submodule_path)
         cached_executable = os.path.join(self.arguments.cache_dir,
                                          self.identifier, "v8-jsshell",
-                                         v8_jsshell_sha1)
+                                         v8_jsshell_sha1 + "-gnutls")
 
-        if os.path.isfile(cached_executable):
+        if self.upgrade_commit is not None \
+                and self.install_commit == self.current_commit \
+                and self.upgrade_commit != self.current_commit:
+            # We're extending before upgrading.  Don't use a cached executable
+            # now if the upgrade changes the sub-module reference, since this
+            # breaks upgrade.py's automatic invocation of extend.py.
+
+            upgraded_v8_jsshell_sha1 = testing.repository.submodule_sha1(
+                os.getcwd(), self.upgrade_commit, submodule_path)
+            if upgraded_v8_jsshell_sha1 != v8_jsshell_sha1:
+                testing.logger.debug("Caching of v8-jsshell disabled")
+                cached_executable = None
+
+        if cached_executable and os.path.isfile(cached_executable):
             self.execute(["mkdir", "installation/externals/v8-jsshell/out"], cwd="critic")
             self.copyto(cached_executable,
                         "critic/installation/externals/v8-jsshell/out/jsshell")
@@ -688,11 +728,13 @@ class Instance(testing.Instance):
                 self.copyfrom("v8deps.tar.bz2", cached_v8deps)
 
             internal("build")
-            if not os.path.isdir(os.path.dirname(cached_executable)):
-                os.makedirs(os.path.dirname(cached_executable))
-            self.copyfrom("critic/installation/externals/v8-jsshell/out/jsshell",
-                          cached_executable)
-            testing.logger.debug("Copied built v8-jsshell executable from instance")
+
+            if cached_executable:
+                if not os.path.isdir(os.path.dirname(cached_executable)):
+                    os.makedirs(os.path.dirname(cached_executable))
+                self.copyfrom("critic/installation/externals/v8-jsshell/out/jsshell",
+                              cached_executable)
+                testing.logger.debug("Copied built v8-jsshell executable from instance")
 
         internal("install")
         internal("enable")

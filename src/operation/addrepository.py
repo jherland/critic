@@ -27,11 +27,12 @@ from operation import Operation, OperationResult, OperationFailure, Optional, Re
 class AddRepository(Operation):
     def __init__(self):
         Operation.__init__(self, { "name": RestrictedString(allowed=lambda ch: ch != "/", minlength=1, maxlength=64, ui_name="short name"),
-                                   "path": str,
-                                   "remote": Optional({ "url": RestrictedString(maxlength=256, ui_name="source repository"),
-                                                        "branch": str }) })
+                                   "path": RestrictedString(minlength=1, ui_name="path"),
+                                   "mirror": Optional({ "remote_url": RestrictedString(maxlength=256, ui_name="source repository"),
+                                                        "remote_branch": str,
+                                                        "local_branch": str }) })
 
-    def process(self, db, user, name, path, remote=None):
+    def process(self, db, user, name, path, mirror=None):
         if not user.hasRole(db, "repositories"):
             raise OperationFailure(code="notallowed",
                                    title="Not allowed!",
@@ -82,9 +83,9 @@ class AddRepository(Operation):
             if git.returncode != 0:
                 raise gitutils.GitError("unexpected output from '%s': %s" % (" ".join(argv), stderr))
 
-        if remote:
+        if mirror:
             try:
-                subprocess.check_output([configuration.executables.GIT, "ls-remote", remote["url"]], stderr=subprocess.STDOUT)
+                subprocess.check_output([configuration.executables.GIT, "ls-remote", mirror["remote_url"]], stderr=subprocess.STDOUT)
             except subprocess.CalledProcessError as e:
                 raise OperationFailure(code="failedreadremote",
                                        title="Failed to read source repository",
@@ -96,6 +97,9 @@ class AddRepository(Operation):
         git(["config", "receive.denyNonFastforwards", "false"], cwd=main_path)
         git(["config", "critic.name", name], cwd=main_path)
 
+        if configuration.debug.IS_QUICKSTART:
+            git(["config", "critic.socket", os.path.join(configuration.paths.SOCKETS_DIR, "githook.unix")], cwd=main_path)
+
         os.symlink(os.path.join(configuration.paths.INSTALL_DIR, "hooks", "pre-receive"), os.path.join(main_path, "hooks", "pre-receive"))
 
         cursor.execute("""INSERT INTO repositories (name, path)
@@ -104,17 +108,20 @@ class AddRepository(Operation):
                        (name, main_path))
         repository_id = cursor.fetchone()[0]
 
-        if remote:
+        if mirror:
             cursor.execute("""INSERT INTO trackedbranches (repository, local_name, remote, remote_name, forced, delay)
                                    VALUES (%s, '*', %s, '*', true, '1 day')""",
-                           (repository_id, remote["url"]))
+                           (repository_id, mirror["remote_url"]))
+
             cursor.execute("""INSERT INTO trackedbranches (repository, local_name, remote, remote_name, forced, delay)
                                    VALUES (%s, %s, %s, %s, true, '1 day')""",
-                           (repository_id, remote["branch"], remote["url"], remote["branch"]))
+                           (repository_id, mirror["local_branch"], mirror["remote_url"], mirror["remote_branch"]))
+
+            git(["symbolic-ref", "HEAD", "refs/heads/" + mirror["local_branch"]], cwd=main_path)
 
         db.commit()
 
-        if remote:
+        if mirror:
             pid = int(open(configuration.services.BRANCHTRACKER["pidfile_path"]).read().strip())
             os.kill(pid, signal.SIGHUP)
 

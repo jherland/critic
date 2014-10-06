@@ -178,14 +178,10 @@ class Repository:
             else:
                 prefix = ""
             url_format = prefix + "critic@%s:" + os.path.join("projects", "%s")
-        elif configuration.base.ACCESS_SCHEME == "http":
-            url_format = "http://%s/%s"
-        elif configuration.base.ACCESS_SCHEME == "https":
-            url_format = "https://%s/%s"
-        elif user.isAnonymous():
-            url_format = "http://%s/%s"
         else:
-            url_format = "https://%s/%s"
+            import dbutils
+            url_prefix = dbutils.getURLPrefix(db, user)
+            return "%s/%s" % (url_prefix, path)
 
         return url_format % (configuration.base.HOSTNAME, path)
 
@@ -860,10 +856,13 @@ class Repository:
             stderr=subprocess.PIPE, env=environ))
 
         def produceInput():
-            data = req.read(65536)
-            if not data:
+            if req.method not in ("POST", "PUT"):
                 return None
-            return data
+            else:
+                data = req.read(65536)
+                if not data:
+                    return None
+                return data
 
         def handleHeaderLine(line):
             line = line.strip()

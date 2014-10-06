@@ -89,10 +89,9 @@ backup of the database first is strongly recommended.
                      data["installation.system.username"]],
                     stdout=output_file)
 
-            print "Compressing database dump ..."
-            print
-
-            subprocess.check_call(["bzip2", backup_path])
+    data["installation.database.driver"] = "postgresql"
+    data["installation.database.parameters"] = { "database": "critic",
+                                                 "user": data["installation.system.username"] }
 
     return True
 

@@ -19,6 +19,7 @@ import gitutils
 from dbutils import *
 from itertools import izip, repeat, chain
 import htmlutils
+import configuration
 
 import mail
 import diff
@@ -27,9 +28,16 @@ import changeset.load as changeset_load
 import reviewing.comment
 import reviewing.filters
 import log.commitset as log_commitset
+import extensions.role.filterhook
 
 from operation import OperationError, OperationFailure
 from filters import Filters
+
+def getFileIdsFromChangesets(changesets):
+    file_ids = set()
+    for changeset in changesets:
+        file_ids.update(changed_file.id for changed_file in changeset.files)
+    return file_ids
 
 def getReviewersAndWatchers(db, repository, commits=None, changesets=None, reviewfilters=None,
                             applyfilters=True, applyparentfilters=False):
@@ -50,12 +58,7 @@ is used as a key in the dictionary instead of a real user ID."""
     cursor = db.cursor()
 
     filters = Filters()
-
-    file_ids = set()
-    for changeset in changesets:
-        for changed_file in changeset.files:
-            file_ids.add(changed_file.id)
-    filters.setFiles(db, list(file_ids))
+    filters.setFiles(db, list(getFileIdsFromChangesets(changesets)))
 
     if applyfilters:
         filters.load(db, repository=repository, recursive=applyparentfilters)
@@ -230,7 +233,70 @@ def assignChanges(db, user, review, commits=None, changesets=None, update=False)
     cursor.executemany("INSERT INTO reviewusers (review, uid) VALUES (%s, %s)", reviewusers_values)
     cursor.executemany("INSERT INTO reviewuserfiles (file, uid) SELECT id, %s FROM reviewfiles WHERE review=%s AND changeset=%s AND file=%s", reviewuserfiles_values)
 
+    if configuration.extensions.ENABLED:
+        cursor.execute("""SELECT id, uid, extension, path
+                            FROM extensionhookfilters
+                           WHERE repository=%s""",
+                       (review.repository.id,))
+
+        rows = cursor.fetchall()
+
+        if rows:
+            if commits is None:
+                commits = set()
+                for changeset in changesets:
+                    commits.add(changeset.child)
+                commits = list(commits)
+
+            filters = Filters()
+            filters.setFiles(db, list(getFileIdsFromChangesets(changesets)))
+
+            for filter_id, user_id, extension_id, path in rows:
+                filters.addFilter(user_id, path, None, None, filter_id)
+
+            for filter_id, file_ids in filters.matched_files.items():
+                extensions.role.filterhook.queueFilterHookEvent(
+                    db, filter_id, review, user, commits, file_ids)
+
     return new_reviewers, new_watchers
+
+def createChangesetsForCommits(db, commits, silent_if_empty=set(), full_merges=set(), replayed_rebases={}):
+    repository = commits[0].repository
+    changesets = []
+    silent_commits = set()
+    silent_changesets = set()
+
+    simple_commits = []
+    for commit in commits:
+        if commit not in full_merges and commit not in replayed_rebases:
+            simple_commits.append(commit)
+    if simple_commits:
+        changeset_utils.createChangesets(db, repository, simple_commits)
+
+    for commit in commits:
+        if commit in full_merges:
+            commit_changesets = changeset_utils.createFullMergeChangeset(
+                db, user, repository, commit, do_highlight=False)
+        elif commit in replayed_rebases:
+            commit_changesets = changeset_utils.createChangeset(
+                db, user, repository,
+                from_commit=commit, to_commit=replayed_rebases[commit],
+                conflicts=True, do_highlight=False)
+        else:
+            commit_changesets = changeset_utils.createChangeset(
+                db, user, repository, commit, do_highlight=False)
+
+        if commit in silent_if_empty:
+            for commit_changeset in commit_changesets:
+                if commit_changeset.files:
+                    break
+            else:
+                silent_commits.add(commit)
+                silent_changesets.update(commit_changesets)
+
+        changesets.extend(commit_changesets)
+
+    return changesets, silent_commits, silent_changesets
 
 def addCommitsToReview(db, user, review, commits, new_review=False, commitset=None, pending_mails=None, silent_if_empty=set(), full_merges=set(), replayed_rebases={}, tracked_branch=False):
     cursor = db.cursor()
@@ -314,39 +380,8 @@ Please confirm that this is intended by loading:
             commitset &= set(new_commits)
             commits = [commit for commit in commits if commit in commitset]
 
-    changesets = []
-    silent_commits = set()
-    silent_changesets = set()
-
-    simple_commits = []
-    for commit in commits:
-        if commit not in full_merges and commit not in replayed_rebases:
-            simple_commits.append(commit)
-    if simple_commits:
-        changeset_utils.createChangesets(db, review.repository, simple_commits)
-
-    for commit in commits:
-        if commit in full_merges:
-            commit_changesets = changeset_utils.createFullMergeChangeset(
-                db, user, review.repository, commit, do_highlight=False)
-        elif commit in replayed_rebases:
-            commit_changesets = changeset_utils.createChangeset(
-                db, user, review.repository,
-                from_commit=commit, to_commit=replayed_rebases[commit],
-                conflicts=True, do_highlight=False)
-        else:
-            commit_changesets = changeset_utils.createChangeset(
-                db, user, review.repository, commit, do_highlight=False)
-
-        if commit in silent_if_empty:
-            for commit_changeset in commit_changesets:
-                if commit_changeset.files:
-                    break
-            else:
-                silent_commits.add(commit)
-                silent_changesets.update(commit_changesets)
-
-        changesets.extend(commit_changesets)
+    changesets, silent_commits, silent_changesets = \
+        createChangesetsForCommits(db, commits, silent_if_empty, full_merges, replayed_rebases)
 
     if not new_review:
         print "Adding %d commit%s to the review at:\n  %s" % (len(commits), len(commits) > 1 and "s" or "", review.getURL(db))
@@ -473,6 +508,8 @@ using the command<p>
                          "<code style='padding-left: 1em'>%s</code>"
                          % htmlutils.htmlify(error.output)),
                 is_html=True)
+
+    createChangesetsForCommits(db, commits)
 
     try:
         cursor.execute("INSERT INTO branches (repository, name, head, tail, type) VALUES (%s, %s, %s, %s, 'review') RETURNING id", [repository.id, branch_name, head.getId(db), tail_id])
@@ -968,8 +1005,8 @@ def retireUser(db, user):
     # complicates a whole bunch of queries, so to keep things simple, we can
     # sacrifice a little history.
     cursor.execute("""DELETE FROM reviewuserfiles
-                            USING reviewfiles
-                            WHERE reviewuserfiles.uid=%s
-                              AND reviewuserfiles.file=reviewfiles.id
-                              AND reviewfiles.state='pending'""",
+                            WHERE uid=%s
+                              AND file IN (SELECT id
+                                             FROM reviewfiles
+                                            WHERE state='pending')""",
                    (user.id,))

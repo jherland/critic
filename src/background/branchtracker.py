@@ -27,6 +27,14 @@ import gitutils
 import mailutils
 import configuration
 
+# Git (git-send-pack) appends a line suffix to its output.  This suffix depends
+# on the $TERM value.  When $TERM is "dumb", the suffix is 8 spaces.  We strip
+# this suffix if it's present.  (If we incorrectly strip 8 spaces not actually
+# added by Git, it's not the end of the world.)
+#
+# See https://github.com/git/git/blob/master/sideband.c for details.
+DUMB_SUFFIX = "        "
+
 class BranchTracker(background.utils.BackgroundProcess):
     def __init__(self):
         super(BranchTracker, self).__init__(service=configuration.services.BRANCHTRACKER)
@@ -65,10 +73,20 @@ class BranchTracker(background.utils.BackgroundProcess):
 
                     returncode, stdout, stderr = relay.run(
                         "push", "--force", "origin", *refspecs,
-                        env={ "CRITIC_FLAGS": "trackedbranch_id=%d" % trackedbranch_id },
+                        env={ "CRITIC_FLAGS": "trackedbranch_id=%d" % trackedbranch_id,
+                              "TERM": "dumb" },
                         check_errors=False)
 
-                    stderr = stderr.replace("\x1b[K", "")
+                    stderr_lines = []
+                    remote_lines = []
+
+                    for line in stderr.splitlines():
+                        if line.endswith(DUMB_SUFFIX):
+                            line = line[:-len(DUMB_SUFFIX)]
+                        stderr_lines.append(line)
+                        if line.startswith("remote: "):
+                            line = line[8:]
+                            remote_lines.append(line)
 
                     if returncode == 0:
                         if local_name == "*":
@@ -81,10 +99,9 @@ class BranchTracker(background.utils.BackgroundProcess):
 
                         hook_output = ""
 
-                        for line in stderr.splitlines():
-                            if line.startswith("remote: "):
-                                self.debug("  [hook] " + line[8:])
-                                hook_output += line[8:] + "\n"
+                        for line in remote_lines:
+                            self.debug("  [hook] " + line)
+                            hook_output += line + "\n"
 
                         if local_name != "*":
                             cursor = self.db.cursor()
@@ -99,10 +116,11 @@ class BranchTracker(background.utils.BackgroundProcess):
 
                         hook_output = ""
 
-                        for line in stderr.splitlines():
+                        for line in stderr_lines:
                             error += "\n    " + line
-                            if line.startswith("remote: "):
-                                hook_output += line[8:] + "\n"
+
+                        for line in remote_lines:
+                            hook_output += line + "\n"
 
                         self.error(error)
 
@@ -196,28 +214,27 @@ Output from Critic's git hook
                                      SET previous=NOW(),
                                          next=NOW() + delay,
                                          updating=TRUE
-                                   WHERE repository=%s
-                                     AND local_name=%s
-                               RETURNING next::text""",
-                               (repository_id, local_name))
-                next_at = cursor.fetchone()[0]
+                                   WHERE id=%s""",
+                               (trackedbranch_id,))
 
                 self.db.commit()
 
                 if self.update(trackedbranch_id, repository_id, local_name, remote, remote_name, forced):
                     cursor.execute("""UPDATE trackedbranches
                                          SET updating=FALSE
-                                       WHERE repository=%s
-                                         AND local_name=%s""",
-                                   (repository_id, local_name))
-                    self.info("  next scheduled update at %s" % next_at)
+                                       WHERE id=%s""",
+                                   (trackedbranch_id,))
+                    cursor.execute("""SELECT next::text
+                                        FROM trackedbranches
+                                       WHERE id=%s""",
+                                   (trackedbranch_id,))
+                    self.info("  next scheduled update at %s" % cursor.fetchone())
                 else:
                     cursor.execute("""UPDATE trackedbranches
                                          SET updating=FALSE,
                                              disabled=TRUE
-                                       WHERE repository=%s
-                                         AND local_name=%s""",
-                                   (repository_id, local_name))
+                                       WHERE id=%s""",
+                                   (trackedbranch_id,))
                     self.info("  tracking disabled")
 
                 self.db.commit()
@@ -267,6 +284,6 @@ Output from Critic's git hook
 
 def start_service():
     tracker = BranchTracker()
-    tracker.run()
+    return tracker.start()
 
 background.utils.call("branchtracker", start_service)

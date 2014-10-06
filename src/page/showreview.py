@@ -102,7 +102,7 @@ class ApprovalColumn:
 
         profiler.check("fillCache: total")
 
-        cursor.execute("""SELECT child, COALESCE(reviewfilechanges.to, reviewfiles.state) AS effective_state, COUNT(*), SUM(deleted), SUM(inserted)
+        cursor.execute("""SELECT child, COALESCE(reviewfilechanges.to_state, reviewfiles.state) AS effective_state, COUNT(*), SUM(deleted), SUM(inserted)
                             FROM changesets
                             JOIN reviewfiles ON (changeset=changesets.id)
                             JOIN reviewuserfiles ON (reviewuserfiles.file=reviewfiles.id)
@@ -722,11 +722,19 @@ def renderShowReview(req, db, user):
                             GROUP BY reviewuserfiles.uid""",
                            (review.id,))
 
-            def total_seconds(delta):
+            now = datetime.datetime.now()
+
+            def seconds_since(timestamp):
+                if isinstance(timestamp, int):
+                    # We tell sqlite3 to convert TIMESTAMP values into datetime
+                    # objects, but apparently MIN(timestamp) as used in the
+                    # query above isn't typed as TIMESTAMP by SQLite, so doesn't
+                    # get converted automatically.
+                    timestamp = datetime.datetime.fromtimestamp(timestamp)
+                delta = now - timestamp
                 return delta.days * 60 * 60 * 24 + delta.seconds
 
-            now = datetime.datetime.now()
-            pending_reviewers = [(dbutils.User.fromId(db, user_id), total_seconds(now - timestamp)) for (user_id, timestamp) in cursor.fetchall() if total_seconds(now - timestamp) > 60 * 60 * 8]
+            pending_reviewers = [(dbutils.User.fromId(db, user_id), seconds_since(timestamp)) for (user_id, timestamp) in cursor.fetchall() if seconds_since(timestamp) > 60 * 60 * 8]
 
             if pending_reviewers:
                 progress.tr().td('stragglers', colspan=3).text("Needs review from")
@@ -941,7 +949,7 @@ def renderShowReview(req, db, user):
                 nunread = chain.countUnread()
 
                 cell = row.td("when")
-                if ncomments == 1:
+                if ncomments <= 1:
                     if nunread: cell.b().text("Unread")
                     else: cell.text("No replies")
                 else:
@@ -1086,17 +1094,17 @@ def renderShowReview(req, db, user):
     if rows:
         numbers = {}
 
-        cursor.execute("""SELECT batches.id, reviewfiles.state, SUM(deleted), SUM(inserted)
+        cursor.execute("""SELECT batches.id, reviewfilechanges.to_state, SUM(deleted), SUM(inserted)
                             FROM batches
                             JOIN reviewfilechanges ON (reviewfilechanges.batch=batches.id)
                             JOIN reviewfiles ON (reviewfiles.id=reviewfilechanges.file)
                            WHERE batches.review=%s
-                        GROUP BY batches.id, reviewfiles.state""",
+                        GROUP BY batches.id, reviewfilechanges.to_state""",
                        (review.id,))
 
-        for batch_id, reviewfile_state, deleted, inserted in cursor:
+        for batch_id, state, deleted, inserted in cursor:
             per_batch = numbers.setdefault(batch_id, {})
-            per_batch[reviewfile_state] = (deleted, inserted)
+            per_batch[state] = (deleted, inserted)
 
         cursor.execute("""SELECT batches.id, commentchains.type, COUNT(commentchains.id)
                             FROM batches
@@ -1199,10 +1207,13 @@ def renderShowReview(req, db, user):
                 replies = per_batch.get("reply")
                 if replies:
                     items.append("wrote %d %s" % with_plural(replies, "reply", "replies"))
-                if len(items) == 1:
-                    items = items[0]
+                if items:
+                    if len(items) == 1:
+                        items = items[0]
+                    else:
+                        items = "%s and %s" % (", ".join(items[:-1]), items[-1])
                 else:
-                    items = "%s and %s" % (", ".join(items[:-1]), items[-1])
+                    items = "nothing"
                 title.span("numbers").text(items)
 
             row.td("when").text(user.formatTimestamp(db, timestamp))

@@ -294,7 +294,7 @@ CREATE TABLE scheduledreviewbrancharchivals
     deadline TIMESTAMP NOT NULL );
 
 CREATE TABLE reviewfilters
-  ( id SERIAL NOT NULL PRIMARY KEY,
+  ( id SERIAL PRIMARY KEY,
 
     review INTEGER NOT NULL REFERENCES reviews ON DELETE CASCADE,
     uid INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
@@ -310,7 +310,7 @@ CREATE TABLE batches
     review INTEGER NOT NULL REFERENCES reviews ON DELETE CASCADE,
     uid INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
     comment INTEGER, -- REFERENCES commentchains,
-    time TIMESTAMP NOT NULL DEFAULT now() );
+    time TIMESTAMP NOT NULL DEFAULT NOW() );
 CREATE INDEX batches_review_uid ON batches (review, uid);
 
 CREATE TYPE reviewusertype AS ENUM
@@ -334,7 +334,7 @@ CREATE TABLE reviewchangesets
     PRIMARY KEY (review, changeset) );
 
 CREATE TABLE reviewrebases
-  ( id SERIAL NOT NULL PRIMARY KEY,
+  ( id SERIAL PRIMARY KEY,
     review INTEGER NOT NULL REFERENCES reviews ON DELETE CASCADE,
     old_head INTEGER NOT NULL REFERENCES commits,
     new_head INTEGER REFERENCES commits,
@@ -431,8 +431,8 @@ CREATE TABLE reviewfilechanges
 
     time TIMESTAMP NOT NULL DEFAULT NOW(),
     state reviewfilechangestate NOT NULL DEFAULT 'draft',
-    "from" reviewfilestate NOT NULL,
-    "to" reviewfilestate NOT NULL,
+    from_state reviewfilestate NOT NULL,
+    to_state reviewfilestate NOT NULL,
 
     FOREIGN KEY (file, uid) REFERENCES reviewuserfiles ON DELETE CASCADE );
 
@@ -444,8 +444,15 @@ CREATE INDEX reviewfilechanges_time ON reviewfilechanges (time);
 CREATE TABLE lockedreviews
   ( review INTEGER PRIMARY KEY REFERENCES reviews );
 
-CREATE VIEW fullreviewuserfiles (review, changeset, file, deleted, inserted, state, reviewer, assignee)
-  AS SELECT reviewfiles.review, reviewfiles.changeset, reviewfiles.file, reviewfiles.deleted, reviewfiles.inserted, reviewfiles.state, reviewfiles.reviewer, reviewuserfiles.uid
+CREATE VIEW fullreviewuserfiles
+  AS SELECT reviewfiles.review as review,
+            reviewfiles.changeset as changeset,
+            reviewfiles.file as file,
+            reviewfiles.deleted as deleted,
+            reviewfiles.inserted as inserted,
+            reviewfiles.state as state,
+            reviewfiles.reviewer as reviewer,
+            reviewuserfiles.uid as assignee
        FROM reviewfiles
        JOIN reviewuserfiles ON (reviewuserfiles.file=reviewfiles.id);
 
@@ -484,7 +491,7 @@ CREATE TABLE reviewmergecontributions
 
 CREATE TABLE newsitems
   ( id SERIAL PRIMARY KEY,
-    date DATE DEFAULT now(),
+    date DATE DEFAULT NOW(),
     text TEXT NOT NULL );
 
 CREATE TABLE newsread

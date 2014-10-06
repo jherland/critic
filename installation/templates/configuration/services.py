@@ -38,15 +38,16 @@ BRANCHTRACKER     = service(name="branchtracker",     address=None)
 MAILDELIVERY      = service(name="maildelivery",      address=None)
 WATCHDOG          = service(name="watchdog",          address=None)
 MAINTENANCE       = service(name="maintenance",       address=None)
+EXTENSIONTASKS    = service(name="extensiontasks",    address=None)
 SERVICEMANAGER    = service(name="servicemanager")
 
 HIGHLIGHT["cache_dir"] = os.path.join(configuration.paths.CACHE_DIR, "highlight")
 HIGHLIGHT["min_context_length"] = 5
 HIGHLIGHT["max_context_length"] = 256
-HIGHLIGHT["max_workers"] = 4
+HIGHLIGHT["max_workers"] = %(installation.config.highlight.max_workers)d
 HIGHLIGHT["compact_at"] = (3, 15)
 
-CHANGESET["max_workers"] = 4
+CHANGESET["max_workers"] = %(installation.config.changeset.max_workers)d
 CHANGESET["rss_limit"] = 1024 ** 3
 CHANGESET["purge_at"] = (2, 15)
 
@@ -64,4 +65,5 @@ SERVICEMANAGER["services"] = [HIGHLIGHT,
                               BRANCHTRACKER,
                               MAILDELIVERY,
                               WATCHDOG,
-                              MAINTENANCE]
+                              MAINTENANCE,
+                              EXTENSIONTASKS]

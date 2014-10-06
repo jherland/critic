@@ -35,6 +35,7 @@ import diff
 import mailutils
 import configuration
 import auth
+import htmlutils
 
 import operation.createcomment
 import operation.createreview
@@ -112,6 +113,11 @@ def setContentTypeFromPath(req):
         req.setContentType("text/plain")
 
 def handleStaticResource(req):
+    if req.path == "static-resource/":
+        req.setStatus(403)
+        req.setContentType("text/plain")
+        req.start()
+        return ["Directory listing disabled!"]
     resource_path = os.path.join(configuration.paths.INSTALL_DIR,
                                  "resources",
                                  req.path.split("/", 1)[1])
@@ -122,6 +128,12 @@ def handleStaticResource(req):
         req.setContentType("text/plain")
         req.start()
         return ["No such resource!"]
+    last_modified = htmlutils.mtime(resource_path)
+    if req.query and req.query == htmlutils.base36(last_modified):
+        HTTP_DATE = "%a, %d %b %Y %H:%M:%S GMT"
+        req.addResponseHeader("Last-Modified", time.strftime(HTTP_DATE, time.gmtime(last_modified)))
+        req.addResponseHeader("Expires", time.strftime(HTTP_DATE, time.gmtime(time.time() + 2592000)))
+        req.addResponseHeader("Cache-Control", "max-age=2592000")
     setContentTypeFromPath(req)
     req.start()
     with open(resource_path, "r") as resource_file:
@@ -537,6 +549,8 @@ if configuration.extensions.ENABLED:
     OPERATIONS["uninstallextension"] = operation.extensioninstallation.UninstallExtension()
     OPERATIONS["reinstallextension"] = operation.extensioninstallation.ReinstallExtension()
     OPERATIONS["clearextensionstorage"] = operation.extensioninstallation.ClearExtensionStorage()
+    OPERATIONS["addextensionhookfilter"] = operation.extensioninstallation.AddExtensionHookFilter()
+    OPERATIONS["deleteextensionhookfilter"] = operation.extensioninstallation.DeleteExtensionHookFilter()
     OPERATIONS["loadmanifest"] = loadmanifest
     OPERATIONS["processcommits"] = processcommits
 
@@ -556,7 +570,7 @@ def handleException(db, req, user, as_html=False):
 
     environ["wsgi.errors"].write(error_message)
 
-    if not user or not user.hasRole(db, "developer"):
+    if not user or not db or not user.hasRole(db, "developer"):
         url = wsgiref.util.request_uri(environ)
 
         x_forwarded_host = req.getRequestHeader("X-Forwarded-Host")
@@ -577,7 +591,7 @@ def handleException(db, req, user, as_html=False):
     else:
         admin_message_sent = False
 
-    if not user or user.hasRole(db, "developer") \
+    if not user or not db or user.hasRole(db, "developer") \
             or configuration.debug.IS_DEVELOPMENT \
             or configuration.debug.IS_TESTING:
         error_title = "Unexpected error!"
@@ -1071,10 +1085,14 @@ authentication in apache2, see:
             req.start()
 
             return [str(document)]
-        except:
+        except Exception:
             # crash might be psycopg2.ProgrammingError so rollback to avoid
             # "InternalError: current transaction is aborted" inside handleException()
-            db.rollback()
+            if db and db.closed():
+                db = None
+            elif db:
+                db.rollback()
+
             error_title, error_body = handleException(db, req, user)
             error_body = reflow("\n\n".join(error_body))
             error_message = "\n".join([error_title,

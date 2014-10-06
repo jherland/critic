@@ -14,6 +14,10 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
+# The database server: "postgresql" for a real install, "sqlite" for a quick-
+# start.
+DRIVER = %(installation.database.driver)r
+
 # Dictionary whose members are passed as keyword arguments to
 # psycopg2.connect().
-PARAMETERS = { "database": "critic", "user": "%(installation.system.username)s" }
+PARAMETERS = %(installation.database.parameters)r

@@ -50,19 +50,33 @@ with frontend.signin():
     # if it's already handled for some reason, that check won't be reliable.
     frontend.page("critic/master", expected_http_status=404)
 
+    if instance.has_flag("addrepository-has-mirror-parameter"):
+        mirror = "mirror"
+        mirror_data = { "remote_url": repository.url,
+                        "remote_branch": "master",
+                        "local_branch": "master" }
+    else:
+        mirror = "remote"
+        mirror_data = { "url": repository.url,
+                        "branch": "master" }
+
     frontend.operation("addrepository",
                        data={ "name": "critic",
                               "path": "critic",
-                              "remote": { "url": repository.url,
-                                          "branch": "master" }})
+                              mirror: mirror_data })
 
     instance.synchronize_service("branchtracker")
 
-    try:
-        frontend.page("critic/master")
-    except testing.TestFailure:
-        logger.error("Repository main branch ('refs/heads/master') not fetched as expected.")
-        raise testing.TestFailure
+    with repository.workcopy(empty=True) as work:
+        REMOTE_URL = instance.repository_url("alice")
+
+        try:
+            work.run(
+                ["ls-remote", "--exit-code", REMOTE_URL, "refs/heads/master"])
+        except testing.repository.GitCommandError:
+            logger.error("Repository main branch ('refs/heads/master') "
+                         "not fetched as expected.")
+            raise testing.TestFailure
 
     # Check that /repositories still loads correctly now that there's a
     # repository in the system.
@@ -102,3 +116,9 @@ with frontend.signin():
                               "path": "validpath" },
                        expect={ "status": "failure",
                                 "code": "invalid_name" })
+
+    frontend.operation("addrepository",
+                       data={ "name": "validname",
+                              "path": "" },
+                       expect={ "status": "failure",
+                                "code": "paramtooshort:data.path" })

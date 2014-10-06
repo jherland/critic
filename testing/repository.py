@@ -19,6 +19,7 @@ import time
 import tempfile
 import shutil
 import subprocess
+import re
 
 import testing
 
@@ -37,16 +38,36 @@ def _git(args, **kwargs):
     else:
         cwd = ""
     testing.logger.debug("Running: %s%s" % (" ".join(argv), cwd))
+    env = kwargs.setdefault("env", {})
+    env.setdefault("GIT_AUTHOR_NAME", "Critic Tester")
+    env.setdefault("GIT_COMMITTER_NAME", "Critic Tester")
+    env.setdefault("GIT_AUTHOR_EMAIL", "tester@example.org")
+    env.setdefault("GIT_COMMITTER_EMAIL", "tester@example.org")
     try:
         return subprocess.check_output(
             argv, stdin=open("/dev/null"), stderr=subprocess.STDOUT, **kwargs)
     except subprocess.CalledProcessError as error:
         raise GitCommandError(" ".join(argv), error.output)
 
+def submodule_sha1(repository_path, parent_sha1, submodule_path):
+    try:
+        lstree = _git(["ls-tree", parent_sha1, submodule_path],
+                      cwd=repository_path)
+    except GitCommandError:
+        # Sub-module doesn't exist?  Will probably fail later, but doesn't need
+        # to fail here.
+        return None
+    mode, object_type, sha1, path = lstree.strip().split(None, 3)
+    if object_type != "commit":
+        # Odd.  The repository doesn't look at all like we expect.
+        return None
+    return sha1
+
 class Repository(object):
-    def __init__(self, host, port, tested_commit, vm_hostname):
+    def __init__(self, host, port, tested_commit, instance):
         self.host = host
         self.port = port
+        self.instance = instance
         self.base_path = tempfile.mkdtemp()
         self.path = os.path.join(self.base_path, "critic.git")
         self.work = os.path.join(self.base_path, "work")
@@ -67,20 +88,6 @@ class Repository(object):
              cwd=self.path)
 
         self.push(tested_commit)
-
-        def submodule_sha1(repository_path, parent_sha1, submodule_path):
-            try:
-                lstree = _git(["ls-tree", parent_sha1, submodule_path],
-                              cwd=repository_path)
-            except GitCommandError:
-                # Sub-module doesn't exist?  Will probably fail later, but
-                # doesn't need to fail here.
-                return None
-            mode, object_type, sha1, path = lstree.strip().split(None, 3)
-            if object_type != "commit":
-                # Odd.  The repository doesn't look at all like we expect.
-                return None
-            return sha1
 
         if os.path.exists("installation/externals/v8-jsshell/.git"):
             v8_jsshell_path = os.path.join(os.getcwd(), "installation/externals/v8-jsshell")
@@ -149,22 +156,36 @@ class Repository(object):
             testing.logger.debug("Exported repository: %s" % self.v8_path)
         return True
 
-    def run(self, args):
-        return _git(args, cwd=self.path)
+    def run(self, args, cwd=None, env=None):
+        if cwd is None:
+            cwd = self.path
+        if env is None:
+            env = {}
+        if isinstance(self.instance, testing.quickstart.Instance):
+            for index, arg in enumerate(args[1:]):
+                if isinstance(arg, testing.quickstart.RepositoryURL):
+                    args[index + 1] = arg.path
+                    env["REMOTE_USER"] = arg.name
+        return _git(args, cwd=cwd, env=env)
 
     def workcopy(self, name="critic", empty=False):
+        master = self
+
         class Workcopy(testing.Context):
             def __init__(self, path, start, finish):
                 super(Workcopy, self).__init__(start, finish)
                 self.path = path
 
             def run(self, args, **kwargs):
-                env = os.environ.copy()
-                for name in kwargs.keys():
-                    if name.lower() != name == name.upper():
-                        env[name] = kwargs[name]
-                        del kwargs[name]
-                return _git(args, cwd=self.path, env=env, **kwargs)
+                if kwargs:
+                    env = {}
+                    for name in kwargs.keys():
+                        if name.lower() != name == name.upper():
+                            env[name] = kwargs[name]
+                            del kwargs[name]
+                else:
+                    env = None
+                return master.run(args, cwd=self.path, env=env, **kwargs)
 
         path = os.path.join(self.work, name)
 

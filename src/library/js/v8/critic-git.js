@@ -275,11 +275,14 @@ function CriticRepository(name_or_id)
         catfile = new OS.Process(git_executable, { argv: argv, cwd: self.path });
         catfile.stdin = stdin.input;
         catfile.stdout = stdout.output;
-        catfile.start();
+        catfile.stderr = new IO.MemoryFile();
 
         catfile_in = stdin.output;
+        catfile_in.setCloseOnExec(true);
         catfile_out = stdout.input;
         catfile_buffer = new IO.Buffered(catfile_out);
+
+        catfile.start();
       }
 
       try
